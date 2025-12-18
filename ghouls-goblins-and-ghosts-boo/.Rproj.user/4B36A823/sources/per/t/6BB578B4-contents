@@ -1,0 +1,512 @@
+count = log1p(count),
+datetime = ymd_hms(datetime)
+) %>%
+select(-casual, -registered)
+test <- vroom("Bike Data/test.csv") %>%
+mutate(datetime = ymd_hms(datetime))
+test  <- vroom("Bike Data/test.csv")
+#===============================
+# Load and preprocess data
+#===============================
+train <- vroom("Bike Data/train.csv") %>%
+mutate(count = log1p(count)) %>%     # log-transform target
+select(-casual, -registered)
+test  <- vroom("Bike Data/test.csv")
+#===============================
+# Feature Engineering Recipe
+#===============================
+bike_recipe <- recipe(count ~ ., data = train) %>%
+step_mutate(
+weather = ifelse(weather == 4, 3, weather),
+weekend = ifelse(wday(datetime) %in% c(1, 7), 1, 0),
+rush_hour = ifelse(hour(datetime) %in% c(7:9, 16:19), 1, 0),
+cherryfest = ifelse(
+(year(datetime) == 2011 & date(datetime) >= as.Date("2011-03-26") & date(datetime) <= as.Date("2011-04-10")) |
+(year(datetime) == 2012 & date(datetime) >= as.Date("2012-03-20") & date(datetime) <= as.Date("2012-04-27")),
+1, 0)
+) %>%
+step_mutate(date = as.Date(datetime)) %>%
+step_dusk(date, lat = 38.8893, lon = -77.0502) %>%  # 🌅 Custom dusk feature
+step_date(datetime, features = c("month", "year", "dow")) %>%
+step_time(datetime, features = "hour") %>%
+step_rm(datetime, date) %>%
+step_dummy(all_nominal_predictors()) %>%
+step_interact(terms = ~ temp:humidity + temp:windspeed + season:humidity) %>%
+step_poly(temp, humidity, degree = 2) %>%
+step_normalize(all_numeric_predictors())
+#===============================
+# Model & Workflow
+#===============================
+h2o::h2o.init()
+auto_model <- auto_ml() %>%
+set_engine("h2o", max_runtime_secs = 180, max_models = 5) %>%
+set_mode("regression")
+automl_wf <- workflow() %>%
+add_recipe(bike_recipe) %>%
+add_model(auto_model) %>%
+fit(data = train)
+#===============================
+# Predictions
+#===============================
+preds <- predict(automl_wf, new_data = test)
+kaggle_h2o <- preds %>%
+bind_cols(test) %>%
+select(datetime, .pred) %>%
+rename(count = .pred) %>%
+mutate(
+count = expm1(count),
+count = pmax(0, count),
+datetime = format(datetime, "%Y-%m-%d %H:%M:%S")
+)
+vroom_write(kaggle_h2o, file = "./PredsPreds.csv", delim = ",")
+vroom_write(kaggle_h2o, file = "./PredsPreds2.csv", delim = ",")
+library(tidyverse)
+library(vroom)
+library(lubridate)
+library(tidymodels)
+library(suncalc)
+library(h2o)
+#===============================
+# Custom Step: step_dusk
+#===============================
+step_dusk <- function(recipe, date_col, lat, lon, role = "predictor", trained = FALSE, columns = NULL, skip = FALSE, id = rand_id("dusk")) {
+add_step(
+recipe,
+step_dusk_new(
+date_col = enquo(date_col),
+lat = lat,
+lon = lon,
+trained = trained,
+columns = columns,
+role = role,
+skip = skip,
+id = id
+)
+)
+}
+step_dusk_new <- function(date_col, lat, lon, trained, columns, role, skip, id) {
+step(
+subclass = "dusk",
+date_col = date_col,
+lat = lat,
+lon = lon,
+trained = trained,
+columns = columns,
+role = role,
+skip = skip,
+id = id
+)
+}
+# Prepare at bake time
+prep.step_dusk <- function(x, training, info = NULL, ...) {
+col_name <- quo_name(x$date_col)
+step_dusk_new(
+date_col = x$date_col,
+lat = x$lat,
+lon = x$lon,
+trained = TRUE,
+columns = col_name,
+role = x$role,
+skip = x$skip,
+id = x$id
+)
+}
+bake.step_dusk <- function(object, new_data, ...) {
+col_name <- object$columns
+dates <- as.Date(new_data[[col_name]])
+dusk_times <- getSunlightTimes(
+date = unique(dates),
+lat = object$lat,
+lon = object$lon
+) %>%
+select(date, dusk)
+new_data <- new_data %>%
+left_join(dusk_times, by = c(!!col_name := "date"))
+new_data
+}
+#===============================
+# Load and preprocess data
+#===============================
+train <- vroom("Bike Data/train.csv") %>%
+mutate(count = log1p(count)) %>%     # log-transform target
+select(-casual, -registered)
+test  <- vroom("Bike Data/test.csv")
+#===============================
+# Feature Engineering Recipe
+#===============================
+bike_recipe <- recipe(count ~ ., data = train) %>%
+step_mutate(
+weather = ifelse(weather == 4, 3, weather),
+weekend = ifelse(wday(datetime) %in% c(1, 7), 1, 0),
+rush_hour = ifelse(hour(datetime) %in% c(7:9, 16:19), 1, 0),
+cherryfest = ifelse(
+(year(datetime) == 2011 & date(datetime) >= as.Date("2011-03-26") & date(datetime) <= as.Date("2011-04-10")) |
+(year(datetime) == 2012 & date(datetime) >= as.Date("2012-03-20") & date(datetime) <= as.Date("2012-04-27")),
+1, 0)
+) %>%
+step_mutate(date = as.Date(datetime)) %>%
+step_dusk(date, lat = 38.8893, lon = -77.0502) %>%  # 🌅 Custom dusk feature
+step_date(datetime, features = c("month", "year", "dow")) %>%
+step_time(datetime, features = "hour") %>%
+step_rm(datetime, date) %>%
+step_dummy(all_nominal_predictors()) %>%
+step_interact(terms = ~ temp:humidity + temp:windspeed + season:humidity) %>%
+step_poly(temp, humidity, degree = 2) %>%
+step_normalize(all_numeric_predictors())
+#===============================
+# Model & Workflow
+#===============================
+h2o::h2o.init()
+auto_model <- auto_ml() %>%
+set_engine("h2o", max_runtime_secs = 180, max_models = 5) %>%
+set_mode("regression")
+automl_wf <- workflow() %>%
+add_recipe(bike_recipe) %>%
+add_model(auto_model) %>%
+fit(data = train)
+#===============================
+# Predictions
+#===============================
+preds <- predict(automl_wf, new_data = test)
+kaggle_h2o <- preds %>%
+bind_cols(test) %>%
+select(datetime, .pred) %>%
+rename(count = .pred) %>%
+mutate(
+count = expm1(count),
+count = pmax(0, count),
+datetime = format(datetime, "%Y-%m-%d %H:%M:%S")
+)
+vroom_write(kaggle_h2o, file = "./PredsPreds2.csv", delim = ",")
+#===============================
+# Custom Step: step_dusk
+#===============================
+step_dusk <- function(recipe, date_col, lat, lon,
+role = "predictor", trained = FALSE,
+columns = NULL, skip = FALSE,
+id = rand_id("dusk")) {
+add_step(
+recipe,
+step_dusk_new(
+date_col = enquo(date_col),
+lat = lat,
+lon = lon,
+trained = trained,
+columns = columns,
+role = role,
+skip = skip,
+id = id
+)
+)
+}
+step_dusk_new <- function(date_col, lat, lon, trained, columns, role, skip, id) {
+step(
+subclass = "dusk",
+date_col = date_col,
+lat = lat,
+lon = lon,
+trained = trained,
+columns = columns,
+role = role,
+skip = skip,
+id = id
+)
+}
+prep.step_dusk <- function(x, training, info = NULL, ...) {
+step_dusk_new(
+date_col = x$date_col,
+lat = x$lat,
+lon = x$lon,
+trained = TRUE,
+columns = quo_name(x$date_col),
+role = x$role,
+skip = x$skip,
+id = x$id
+)
+}
+bake.step_dusk <- function(object, new_data, ...) {
+col_name <- object$columns
+dates <- as.Date(new_data[[col_name]])
+dusk_times <- getSunlightTimes(
+date = unique(dates),
+lat = object$lat,
+lon = object$lon
+) %>%
+select(date, dusk)
+# Regular join (no quosure magic)
+new_data <- new_data %>%
+left_join(dusk_times, by = c(!!col_name := "date"))
+new_data
+}
+#===============================
+# Load and preprocess data
+#===============================
+train <- vroom("Bike Data/train.csv") %>%
+mutate(count = log1p(count)) %>%     # log-transform target
+select(-casual, -registered)
+test  <- vroom("Bike Data/test.csv")
+#===============================
+# Feature Engineering Recipe
+#===============================
+bike_recipe <- recipe(count ~ ., data = train) %>%
+# Ensure datetime is POSIXct (recipes sometimes lose type info)
+step_mutate(datetime = as.POSIXct(datetime)) %>%
+step_mutate(
+weather = ifelse(weather == 4, 3, weather),
+weekend = ifelse(wday(datetime) %in% c(1, 7), 1, 0),
+rush_hour = ifelse(hour(datetime) %in% c(7:9, 16:19), 1, 0),
+cherryfest = ifelse(
+(year(datetime) == 2011 & date(datetime) >= as.Date("2011-03-26") & date(datetime) <= as.Date("2011-04-10")) |
+(year(datetime) == 2012 & date(datetime) >= as.Date("2012-03-20") & date(datetime) <= as.Date("2012-04-27")),
+1, 0)
+) %>%
+step_mutate(date = as.Date(datetime)) %>%
+step_dusk(date, lat = 38.8893, lon = -77.0502) %>%
+step_date(datetime, features = c("month", "year", "dow")) %>%
+step_time(datetime, features = "hour") %>%
+step_rm(datetime, date) %>%
+step_dummy(all_nominal_predictors()) %>%
+step_interact(terms = ~ temp:humidity + temp:windspeed + season:humidity) %>%
+step_poly(temp, humidity, degree = 2) %>%
+step_normalize(all_numeric_predictors())
+#===============================
+# Model & Workflow
+#===============================
+h2o::h2o.init()
+auto_model <- auto_ml() %>%
+set_engine("h2o", max_runtime_secs = 180, max_models = 5) %>%
+set_mode("regression")
+automl_wf <- workflow() %>%
+add_recipe(bike_recipe) %>%
+add_model(auto_model) %>%
+fit(data = train)
+#===============================
+# Predictions
+#===============================
+preds <- predict(automl_wf, new_data = test)
+kaggle_h2o <- preds %>%
+bind_cols(test) %>%
+select(datetime, .pred) %>%
+rename(count = .pred) %>%
+mutate(
+count = expm1(count),
+count = pmax(0, count),
+datetime = format(datetime, "%Y-%m-%d %H:%M:%S")
+)
+#===============================
+# Custom Step: step_dusk
+#===============================
+step_dusk <- function(recipe, date_col, lat, lon,
+role = "predictor", trained = FALSE,
+columns = NULL, skip = FALSE,
+id = rand_id("dusk")) {
+add_step(
+recipe,
+step_dusk_new(
+date_col = rlang::ensym(date_col),  # use symbol instead of quosure
+lat = lat,
+lon = lon,
+trained = trained,
+columns = columns,
+role = role,
+skip = skip,
+id = id
+)
+)
+}
+step_dusk_new <- function(date_col, lat, lon, trained, columns, role, skip, id) {
+step(
+subclass = "dusk",
+date_col = date_col,
+lat = lat,
+lon = lon,
+trained = trained,
+columns = columns,
+role = role,
+skip = skip,
+id = id
+)
+}
+prep.step_dusk <- function(x, training, info = NULL, ...) {
+colname <- rlang::as_name(x$date_col)
+step_dusk_new(
+date_col = x$date_col,
+lat = x$lat,
+lon = x$lon,
+trained = TRUE,
+columns = colname,
+role = x$role,
+skip = x$skip,
+id = x$id
+)
+}
+bake.step_dusk <- function(object, new_data, ...) {
+col_name <- object$columns
+dates <- as.Date(new_data[[col_name]])
+dusk_times <- getSunlightTimes(
+date = unique(dates),
+lat = object$lat,
+lon = object$lon
+) %>%
+select(date, dusk)
+# Clean join (no quosures)
+new_data <- new_data %>%
+dplyr::left_join(dusk_times, by = setNames("date", col_name))
+# (Optional but smart) — convert dusk to numeric minutes since midnight
+new_data <- new_data %>%
+mutate(
+dusk = as.numeric(format(dusk, "%H")) * 60 +
+as.numeric(format(dusk, "%M"))
+)
+new_data
+}
+#===============================
+# Load and preprocess data
+#===============================
+train <- vroom("Bike Data/train.csv") %>%
+mutate(count = log1p(count)) %>%     # log-transform target
+select(-casual, -registered)
+test  <- vroom("Bike Data/test.csv")
+#===============================
+# Feature Engineering Recipe
+#===============================
+bike_recipe <- recipe(count ~ ., data = train) %>%
+step_mutate(datetime = as.POSIXct(datetime)) %>%
+step_mutate(
+weather = ifelse(weather == 4, 3, weather),
+weekend = ifelse(lubridate::wday(as.POSIXct(datetime)) %in% c(1, 7), 1, 0),
+rush_hour = ifelse(lubridate::hour(as.POSIXct(datetime)) %in% c(7:9, 16:19), 1, 0),
+cherryfest = ifelse(
+(lubridate::year(as.POSIXct(datetime)) == 2011 &
+lubridate::date(as.POSIXct(datetime)) >= as.Date("2011-03-26") &
+lubridate::date(as.POSIXct(datetime)) <= as.Date("2011-04-10")) |
+(lubridate::year(as.POSIXct(datetime)) == 2012 &
+lubridate::date(as.POSIXct(datetime)) >= as.Date("2012-03-20") &
+lubridate::date(as.POSIXct(datetime)) <= as.Date("2012-04-27")),
+1, 0)
+) %>%
+step_mutate(date = as.Date(datetime)) %>%
+step_dusk(date, lat = 38.8893, lon = -77.0502) %>%
+step_date(datetime, features = c("month", "year", "dow")) %>%
+step_time(datetime, features = "hour") %>%
+step_rm(datetime, date) %>%
+step_dummy(all_nominal_predictors()) %>%
+step_interact(terms = ~ temp:humidity + temp:windspeed + season:humidity) %>%
+step_poly(temp, humidity, degree = 2) %>%
+step_normalize(all_numeric_predictors())
+#===============================
+# Model & Workflow
+#===============================
+h2o::h2o.init()
+auto_model <- auto_ml() %>%
+set_engine("h2o", max_runtime_secs = 180, max_models = 5) %>%
+set_mode("regression")
+automl_wf <- workflow() %>%
+add_recipe(bike_recipe) %>%
+add_model(auto_model) %>%
+fit(data = train)
+#===============================
+# Predictions
+#===============================
+preds <- predict(automl_wf, new_data = test)
+kaggle_h2o <- preds %>%
+bind_cols(test) %>%
+select(datetime, .pred) %>%
+rename(count = .pred) %>%
+mutate(
+count = expm1(count),
+count = pmax(0, count),
+datetime = format(datetime, "%Y-%m-%d %H:%M:%S")
+)
+vroom_write(kaggle_h2o, file = "./PredsPreds2.csv", delim = ",")
+set.seed(123)  # for reproducibility
+# Def values and probs
+x_vals <- c(-4, -3, -2, -1, 0, 1)
+p_vals <- c(0.04, 0.11, 0.25, 0.30, 0.18, 0.12)
+#10000 values simulated
+X <- sample(x_vals, size = 100000, replace = TRUE, prob = p_vals)
+pmf_X <- prop.table(table(X))
+pmf_X
+# Plot the PMF
+barplot(pmf_X, main = "Approximate PMF of X", xlab = "x", ylab = "Probability")
+p_less_than_0 <- mean(X < 0)
+p_less_than_0
+Y <- -2 * X + 1
+pmf_Y <- prop.table(table(Y))
+pmf_Y
+# Plot the PMF of Y
+barplot(pmf_Y, main = "Approximate PMF of Y = -2X + 1", xlab = "y", ylab = "Probability")
+E_Y <- mean(Y)
+E_Y
+sum(x * p)
+sum(x_vals * p_vals)
+E_X <- mean(X)
+E_X
+#10000 values simulated
+X <- sample(x_vals, size = 100000, replace = TRUE, prob = p_vals)
+E_X <- mean(X)
+E_X
+set.seed(123)  # for reproducibility
+# Def values and probs
+x_vals <- c(-4, -3, -2, -1, 0, 1)
+p_vals <- c(0.04, 0.11, 0.25, 0.30, 0.18, 0.12)
+#10000 values simulated
+X <- sample(x_vals, size = 100000, replace = TRUE, prob = p_vals)
+E_X <- mean(X)
+E_X
+# Theoretical calculation
+n <- 20
+p <- 0.3
+expected_calls_theoretical <- n * p
+sd_calls_theoretical <- sqrt(n * p * (1 - p))
+# Simulation
+n_simulations_e2 <- 100000
+simulated_counts <- replicate(n_simulations_e2, count_calls(n))
+simulated_counts <- replicate(n_simulations_e2, count_calls(n))
+expected_calls_sim <- mean(simulated_counts)
+sd_calls_sim <- sd(simulated_counts)
+sd_calls_sim <- sd(simulated_counts)
+# Print results
+print(paste("Theoretical Expected Number of Fire Calls:", expected_calls_theoretical))
+print(paste("Theoretical Standard Deviation of Fire Calls:", sd_calls_theoretical))
+print(paste("Simulated Expected Number of Fire Calls:", expected_calls_sim))
+print(paste("Simulated Standard Deviation of Fire Calls:", sd_calls_sim))
+n <- 20
+p <- 0.3
+expected <- n * p
+sd_expected <- sqrt(n * p * (1 - p))
+expected
+sd_expected
+# Print results
+print("Theoretical Expected Number of Fire Calls:", expected_calls_theoretical)
+# Print results
+print(paste("Theoretical Expected Number of Fire Calls:", expected_calls_theoretical))
+print(paste("Theoretical Standard Deviation of Fire Calls:", sd_calls_theoretical))
+print(paste("Simulated Expected Number of Fire Calls:", expected_calls_sim))
+# results
+#Theoretical Expected Number of Fire Calls: 6
+#Theoretical Standard Deviation of Fire Calls: 2.04939015319192
+#Theoretical Standard Deviation of Fire Calls: 2.04939015319192
+print(paste("Simulated Expected Number of Fire Calls:", expected_calls_sim))
+expected_calls_sim
+print(paste("Simulated Standard Deviation of Fire Calls:", sd_calls_sim))
+expected_calls_theoretical <- n * p
+# results
+expected_calls_theoretical
+sd_calls_theoretical
+# Exact binomial test (one-sided)
+p_value <- pbinom(11, size = n, prob = p, lower.tail = FALSE)
+p_value
+# Count how many of the simulated counts were 12 or more
+extreme_events <- sum(simulated_counts >= 12)
+# Calculate the proportion (the p-value)
+p_value_approx <- extreme_events / n_sims
+# Calculate the proportion (the p-value)
+p_value_approx <- extreme_events / n_simulations_e2
+p_value_approx
+if (p_value < 0.05) {
+conclusion <- "Reject the null hypothesis. Evidence suggests the fire rate is higher than 30%."
+} else {
+conclusion <- "Fail to reject the null hypothesis. No significant evidence of an increased fire rate."
+}
+conclusion

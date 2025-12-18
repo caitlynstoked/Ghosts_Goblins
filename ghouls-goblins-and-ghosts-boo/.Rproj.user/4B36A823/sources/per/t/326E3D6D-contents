@@ -1,0 +1,83 @@
+library(embed)
+library(vroom)
+library(tidymodels)
+library(ranger)
+library(readr)
+library(beepr)
+
+trainData <- vroom("train.csv")
+testData  <- vroom("test.csv")
+
+ggg_recipe <- recipe(type ~ bone_length + rotting_flesh + hair_length + has_soul + color, 
+                     data = trainData) %>%
+  # combine rare levels into "other"
+  step_other(all_nominal_predictors(), threshold = 0.001) %>%
+  # target encode nominal predictors
+  step_lencode_glm(all_nominal_predictors(), outcome = vars(type)) %>%
+  # normalize numeric predictors
+  step_normalize(all_numeric_predictors())
+
+# Split data
+set.seed(1)
+ggg_split <- initial_split(trainData, prop = 0.8, strata = type)
+ggg_train <- training(ggg_split)
+ggg_valid <- testing(ggg_split)
+
+#3. Specify Random Forest model with tunable parameters
+my_mod <- rand_forest(
+  mtry  = tune(),   # number of predictors to sample at each split
+  min_n = tune(),   # minimum number of data points in a node
+  trees = 500       # number of trees in the forest
+) %>%
+  set_engine("ranger") %>%
+  set_mode("classification")
+
+#4. Create a workflow with model & recipe
+rf_workflow <- workflow() %>%
+  add_model(my_mod) %>%
+  add_recipe(ggg_recipe)
+
+#5. Set up grid of tuning values
+rf_grid <- grid_random(
+  mtry(range = c(1, 10)),
+  min_n(range = c(1, 10)),
+  size = 10
+)
+
+#6. Set up K-fold cross-validation
+set.seed(1)
+ggg_folds <- vfold_cv(trainData, v = 5)
+
+# --- 7. Tune the Random Forest model ----
+rf_tune_results <- tune_grid(
+  rf_workflow,
+  resamples = ggg_folds,
+  grid = rf_grid,
+  metrics = metric_set(roc_auc, accuracy)
+)
+
+best_k <- select_best(rf_tune_results, metric = "roc_auc")
+
+best_k
+
+# Finalize workflow with best k ---------------------------------------------
+final_trees_wf <- finalize_workflow(rf_workflow, best_k)
+
+# Fit final model on full training data -------------------------------------
+final_trees_fit <- fit(final_trees_wf, data = trainData)
+
+# Make predictions on test data (probabilities) ------------------------------
+ggg_trees_predictions <- predict(final_trees_fit, new_data = testData, type = "prob")
+
+# Create Kaggle submission file ---------------------------------------------
+submission <- tibble(
+  Id = 1:nrow(testData),
+  type = ggg_trees_predictions$.pred_1  # probability of type = 1
+)
+
+# Write CSV file for Kaggle -------------------------------------------------
+vroom_write(submission, file = "./ggg_trees_submission.csv", delim = ",")
+
+# Play sound when done ------------------------------------------------------
+beep(0) |> 
+  
